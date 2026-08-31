@@ -1,0 +1,8 @@
+My company is an AI automation company.
+We build AI agents for businesses.
+Our services include customer support agents,
+research agents, and workflow automation.
+
+Navid is learning AI agent development.
+Navid is learning Python, RAG, tool calling, and LLM engineering.
+The AI research agent can use web search, memory, calculator, and local knowledge.
