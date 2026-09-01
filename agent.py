@@ -1,31 +1,82 @@
+import json
 import ollama
 
 from search import search
 from memory import save_memory, search_memory
 from rag import search_index
+from tools import calculator
+
+
+MODEL_NAME = "qwen2.5:1.5b"
 
 
 # =========================================================
-# TOOLS
+# SYSTEM PROMPT
 # =========================================================
 
-def calculator(expression):
-    return str(eval(expression))
+SYSTEM_PROMPT = """
+You are an AI Research Agent.
 
+You have access to these tools:
+- web search
+- calculator
+- persistent memory
+- local RAG knowledge base
+
+Rules:
+
+1. Use web search for current, recent, latest, news, research,
+   or information that may have changed.
+
+2. When web search returns results, USE those results.
+   Do not claim that no results were found if results were returned.
+
+3. When answering from web search results:
+   - summarize the useful information
+   - do not invent facts
+   - include relevant source URLs
+
+4. Use memory when the user asks about information they previously
+   told you about themselves.
+
+5. Save stable personal facts and preferences when appropriate.
+
+6. Use the calculator for arithmetic instead of calculating manually
+   when a calculation tool is appropriate.
+
+7. Use the RAG tool when the question is about the local knowledge base.
+
+8. Be concise, accurate, and useful.
+"""
+
+
+# =========================================================
+# WEB SEARCH
+# =========================================================
 
 def search_web(query):
-
     results = search(query)
 
     if not results:
         return "No search results found."
 
-    return "\n\n".join(
-        f"TITLE: {r['title']}\n"
-        f"URL: {r['url']}\n"
-        f"CONTENT: {r['content']}"
-        for r in results
-    )
+    formatted_results = []
+
+    for result in results[:5]:
+        title = result.get("title", "No title")
+        url = result.get("url", "")
+        content = result.get("content", "")
+
+        # Keep local LLM context reasonably small
+        content = content[:1000]
+
+        formatted_results.append(
+            f"TITLE: {title}\n"
+            f"URL: {url}\n"
+            f"CONTENT: {content}"
+        )
+
+    return "\n\n".join(formatted_results)
 
 
 # =========================================================
@@ -33,7 +84,6 @@ def search_web(query):
 # =========================================================
 
 def is_math_question(question):
-
     cleaned = question.replace(" ", "")
 
     if not cleaned:
@@ -48,24 +98,87 @@ def is_math_question(question):
 
 
 def is_rag_question(question):
-
     q = question.lower().strip()
 
     keywords = [
         "knowledge base",
         "knowledge",
         "document",
+        "local document",
         "according to",
         "according to the knowledge",
         "what is navid learning",
         "what does navid learn",
-        "what is navid learning",
     ]
 
-    return any(
-        keyword in q
-        for keyword in keywords
-    )
+    return any(keyword in q for keyword in keywords)
+
+
+def is_explicit_web_search(question):
+    q = question.lower().strip()
+
+    keywords = [
+        "search the web",
+        "search web",
+        "web search",
+        "search online",
+        "look up",
+        "latest",
+        "recent news",
+        "latest news",
+        "current news",
+        "today's news",
+        "news about",
+    ]
+
+    return any(keyword in q for keyword in keywords)
+
+
+# =========================================================
+# PERSONAL MEMORY HELPERS
+# =========================================================
+
+def should_save_personal_memory(question):
+    q = question.lower().strip()
+
+    # Examples:
+    # My favorite programming language is Python.
+    # My favorite framework is FastAPI.
+    if q.startswith("my ") and " is " in q:
+        return True
+
+    # Examples:
+    # I live in Tehran.
+    # I work as ...
+    # I prefer Python.
+    # I like machine learning.
+    prefixes = [
+        "i live in ",
+        "i work ",
+        "i prefer ",
+        "i like ",
+        "i love ",
+        "my name is ",
+    ]
+
+    return any(q.startswith(prefix) for prefix in prefixes)
+
+
+def extract_memory_query(question):
+    q = question.lower().strip()
+
+    prefixes = [
+        "what is my ",
+        "what's my ",
+        "do you remember my ",
+    ]
+
+    for prefix in prefixes:
+        if q.startswith(prefix):
+            query = q[len(prefix):]
+            return query.rstrip(" ?.")
+
+    return None
 
 
 # =========================================================
@@ -77,16 +190,14 @@ tools = [
     # -----------------------------------------------------
     # RAG SEARCH
     # -----------------------------------------------------
-
     {
         "type": "function",
         "function": {
             "name": "rag_search",
             "description": (
-                "Use this tool whenever the question asks about "
-                "information contained in the local knowledge base, "
-                "knowledge documents, company information, or stored "
-                "knowledge."
+                "Search the local knowledge base. "
+                "Use this when the user asks about information "
+                "contained in local documents or stored knowledge."
             ),
             "parameters": {
                 "type": "object",
@@ -94,29 +205,26 @@ tools = [
                     "query": {
                         "type": "string",
                         "description": (
-                            "The information to search for "
-                            "in the local knowledge base."
-                        )
+                            "Information to search for in the "
+                            "local knowledge base."
+                        ),
                     }
                 },
-                "required": ["query"]
-            }
-        }
+                "required": ["query"],
+            },
+        },
     },
-
 
     # -----------------------------------------------------
     # MEMORY SEARCH
     # -----------------------------------------------------
-
     {
         "type": "function",
         "function": {
             "name": "memory_search",
             "description": (
-                "Use this tool whenever the user asks about "
-                "personal information that may have been saved "
-                "from previous conversations."
+                "Search persistent memory for personal information "
+                "previously provided by the user."
             ),
             "parameters": {
                 "type": "object",
@@ -124,31 +232,26 @@ tools = [
                     "query": {
                         "type": "string",
                         "description": (
-                            "What personal information to search "
-                            "for in memory."
-                        )
+                            "Personal information to search for."
+                        ),
                     }
                 },
-                "required": ["query"]
-            }
-        }
+                "required": ["query"],
+            },
+        },
     },
-
 
     # -----------------------------------------------------
     # MEMORY SAVE
     # -----------------------------------------------------
-
     {
         "type": "function",
         "function": {
             "name": "memory_save",
             "description": (
-                "Use this tool whenever the user tells you "
-                "important personal information that should be "
-                "remembered for future conversations, such as "
-                "their name, location, job, preferences, goals, "
-                "or other stable personal facts."
+                "Save important stable personal information, "
+                "preferences, goals, location, job, or other "
+                "facts for future conversations."
             ),
             "parameters": {
                 "type": "object",
@@ -156,28 +259,25 @@ tools = [
                     "content": {
                         "type": "string",
                         "description": (
-                            "The personal information that should "
-                            "be saved."
-                        )
+                            "Personal information that should be saved."
+                        ),
                     }
                 },
-                "required": ["content"]
-            }
-        }
+                "required": ["content"],
+            },
+        },
     },
-
 
     # -----------------------------------------------------
     # CALCULATOR
     # -----------------------------------------------------
-
     {
         "type": "function",
         "function": {
             "name": "calculator",
             "description": (
-                "ONLY use this tool for mathematical calculations "
-                "and arithmetic expressions."
+                "Safely calculate mathematical and arithmetic "
+                "expressions."
             ),
             "parameters": {
                 "type": "object",
@@ -186,121 +286,187 @@ tools = [
                         "type": "string",
                         "description": (
                             "A mathematical expression such as "
-                            "25 * 99."
-                        )
+                            "(25 * 8) + 17."
+                        ),
                     }
                 },
-                "required": ["expression"]
-            }
-        }
+                "required": ["expression"],
+            },
+        },
     },
-
 
     # -----------------------------------------------------
     # WEB SEARCH
     # -----------------------------------------------------
-
     {
         "type": "function",
         "function": {
             "name": "search_web",
             "description": (
-                "Use this tool for current, latest, recent, "
-                "news, research, or web information."
+                "Search the web for current, latest, recent, "
+                "news, research, or other up-to-date information."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": (
-                            "The query to search on the web."
-                        )
+                        "description": "The query to search on the web.",
                     }
                 },
-                "required": ["query"]
-            }
-        }
-    }
-
+                "required": ["query"],
+            },
+        },
+    },
 ]
+
+
+# =========================================================
+# TOOL ARGUMENT HELPER
+# =========================================================
+
+def normalize_arguments(arguments):
+    """
+    Ollama versions may return tool arguments either as
+    a dictionary or JSON string.
+    """
+
+    if isinstance(arguments, dict):
+        return arguments
+
+    if isinstance(arguments, str):
+        try:
+            return json.loads(arguments)
+        except json.JSONDecodeError:
+            return {}
+
+    return {}
+
+
+# =========================================================
+# RAG ANSWER
+# =========================================================
+
+def answer_with_rag(question):
+    print("TOOL: rag_search")
+
+    results = search_index(question)
+
+    if not results:
+        result = "No relevant information found."
+    else:
+        result = "\n\n".join(results)
+
+    print("TOOL RESULT:")
+    print(result)
+
+    response = ollama.chat(
+        model=MODEL_NAME,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "Answer the user's question using ONLY the "
+                    "provided local knowledge base context. "
+                    "If the answer is not present, say that you "
+                    "do not have enough information. "
+                    "Do not invent facts."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Question:\n{question}\n\n"
+                    f"Knowledge base context:\n{result}"
+                ),
+            },
+        ],
+    )
+
+    return response.message.content
+
+
+# =========================================================
+# WEB SEARCH ANSWER
+# =========================================================
+
+def answer_with_web_search(question):
+    print("TOOL: search_web")
+
+    result = search_web(question)
+
+    print("TOOL RESULT:")
+    print(result)
+
+    if result == "No search results found.":
+        return result
+
+    response = ollama.chat(
+        model=MODEL_NAME,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You are a research assistant. "
+                    "Answer using the web search results provided. "
+                    "Do NOT say that you cannot access the web. "
+                    "Do NOT say that no results were found because "
+                    "results have already been provided. "
+                    "Summarize the most relevant information. "
+                    "Include source URLs from the search results. "
+                    "Do not invent facts."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"User question:\n{question}\n\n"
+                    f"WEB SEARCH RESULTS:\n{result}"
+                ),
+            },
+        ],
+    )
+
+    return response.message.content
 
 
 # =========================================================
 # MAIN AGENT LOOP
 # =========================================================
 
+print("AI Research Agent started.")
+print("Type 'exit' or 'quit' to stop.")
+
+
 while True:
 
-    question = input("\nYou: ")
+    question = input("\nYou: ").strip()
+
+    if not question:
+        continue
 
     # -----------------------------------------------------
     # EXIT
     # -----------------------------------------------------
 
-    if question.lower().strip() in ["exit", "quit"]:
-
+    if question.lower() in ["exit", "quit"]:
         print("Agent stopped.")
-
         break
 
-
-    lower_question = question.lower().strip()
+    lower_question = question.lower()
 
 
     # =====================================================
-    # DIRECT MEMORY SAVE
+    # DIRECT PERSONAL MEMORY SAVE
     # =====================================================
 
-    if lower_question.startswith("my name is "):
-
-        name = question[11:].strip()
+    if should_save_personal_memory(question):
 
         print("TOOL: memory_save")
 
         save_memory(
             "user",
-            f"My name is {name}"
-        )
-
-        print("TOOL RESULT:")
-        print("Memory saved successfully.")
-
-        print("\nAI:")
-        print(f"Nice to meet you, {name}.")
-
-        continue
-
-
-    if lower_question.startswith("i live in "):
-
-        location = question[10:].strip()
-
-        print("TOOL: memory_save")
-
-        save_memory(
-            "user",
-            f"I live in {location}"
-        )
-
-        print("TOOL RESULT:")
-        print("Memory saved successfully.")
-
-        print("\nAI:")
-        print(
-            f"I'll remember that you live in {location}."
-        )
-
-        continue
-
-
-    if lower_question.startswith("i work "):
-
-        print("TOOL: memory_save")
-
-        save_memory(
-            "user",
-            question
+            question,
         )
 
         print("TOOL RESULT:")
@@ -313,25 +479,28 @@ while True:
 
 
     # =====================================================
-    # DIRECT MEMORY SEARCH
+    # DIRECT PERSONAL MEMORY SEARCH
     # =====================================================
 
-    if (
-        "what is my name" in lower_question
-        or "what's my name" in lower_question
-    ):
+    memory_query = extract_memory_query(question)
+
+    if memory_query:
 
         print("TOOL: memory_search")
 
-        memories = search_memory("My name is")
+        memories = search_memory(memory_query)
 
         if not memories:
 
-            result = "I don't know your name yet."
+            result = (
+                "I don't have that information saved yet."
+            )
 
         else:
 
-            result = memories[0][1]
+            # Most recent matching memory
+            role, content = memories[0]
+            result = content
 
         print("TOOL RESULT:")
         print(result)
@@ -343,7 +512,7 @@ while True:
 
 
     # =====================================================
-    # DIRECT CALCULATOR ROUTING
+    # DIRECT CALCULATOR
     # =====================================================
 
     if is_math_question(question):
@@ -362,54 +531,33 @@ while True:
 
 
     # =====================================================
-    # DIRECT RAG ROUTING
+    # DIRECT RAG
     # =====================================================
 
     if is_rag_question(question):
 
-        print("TOOL: rag_search")
-
-        results = search_index(question)
-
-        if not results:
-
-            result = "No relevant information found."
-
-        else:
-
-            result = "\n\n".join(results)
-
-        print("TOOL RESULT:")
-        print(result)
-
-
-        # Send retrieved information to Qwen
-
-        response = ollama.chat(
-
-            model="qwen2.5:1.5b",
-
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Answer the user's question using ONLY "
-                        "the provided knowledge base. "
-                        "Do not invent information."
-                    )
-                },
-                {
-                    "role": "user",
-                    "content": (
-                        f"Question:\n{question}\n\n"
-                        f"Knowledge base:\n{result}"
-                    )
-                }
-            ]
-        )
+        answer = answer_with_rag(question)
 
         print("\nAI:")
-        print(response.message.content)
+        print(answer)
+
+        continue
+
+
+    # =====================================================
+    # DIRECT WEB SEARCH
+    # =====================================================
+
+    # Explicit search requests are routed directly.
+    # This makes the demo much more reliable with a small
+    # local model such as Qwen 2.5 1.5B.
+
+    if is_explicit_web_search(question):
+
+        answer = answer_with_web_search(question)
+
+        print("\nAI:")
+        print(answer)
 
         continue
 
@@ -420,9 +568,13 @@ while True:
 
     messages = [
         {
+            "role": "system",
+            "content": SYSTEM_PROMPT,
+        },
+        {
             "role": "user",
-            "content": question
-        }
+            "content": question,
+        },
     ]
 
 
@@ -430,26 +582,25 @@ while True:
     # AGENT TOOL LOOP
     # =====================================================
 
-    while True:
+    max_tool_rounds = 5
+
+    for _ in range(max_tool_rounds):
 
         response = ollama.chat(
-
-            model="qwen2.5:1.5b",
-
+            model=MODEL_NAME,
             messages=messages,
-
-            tools=tools
+            tools=tools,
         )
-
 
         messages.append(response.message)
 
+        tool_calls = response.message.tool_calls
 
         # -------------------------------------------------
-        # NO TOOL
+        # NO TOOL CALL
         # -------------------------------------------------
 
-        if not response.message.tool_calls:
+        if not tool_calls:
 
             print("\nAI:")
             print(response.message.content)
@@ -458,22 +609,19 @@ while True:
 
 
         # -------------------------------------------------
-        # TOOL CALLS
+        # EXECUTE TOOL CALLS
         # -------------------------------------------------
 
-        for tool_call in response.message.tool_calls:
+        for tool_call in tool_calls:
 
             name = tool_call.function.name
 
-            arguments = tool_call.function.arguments
-
+            arguments = normalize_arguments(
+                tool_call.function.arguments
+            )
 
             print("TOOL:", name)
-
-            print(
-                "ARGUMENTS:",
-                arguments
-            )
+            print("ARGUMENTS:", arguments)
 
 
             # =================================================
@@ -482,9 +630,12 @@ while True:
 
             if name == "calculator":
 
-                result = calculator(
-                    arguments["expression"]
+                expression = arguments.get(
+                    "expression",
+                    "",
                 )
+
+                result = calculator(expression)
 
 
             # =================================================
@@ -493,9 +644,12 @@ while True:
 
             elif name == "memory_search":
 
-                memories = search_memory(
-                    arguments["query"]
+                query = arguments.get(
+                    "query",
+                    "",
                 )
+
+                memories = search_memory(query)
 
                 if not memories:
 
@@ -517,16 +671,27 @@ while True:
 
             elif name == "memory_save":
 
-                content = arguments["content"]
-
-                save_memory(
-                    "user",
-                    content
+                content = arguments.get(
+                    "content",
+                    "",
                 )
 
-                result = (
-                    "Memory saved successfully."
-                )
+                if content:
+
+                    save_memory(
+                        "user",
+                        content,
+                    )
+
+                    result = (
+                        "Memory saved successfully."
+                    )
+
+                else:
+
+                    result = (
+                        "No memory content was provided."
+                    )
 
 
             # =================================================
@@ -535,9 +700,12 @@ while True:
 
             elif name == "rag_search":
 
-                results = search_index(
-                    arguments["query"]
+                query = arguments.get(
+                    "query",
+                    "",
                 )
+
+                results = search_index(query)
 
                 if not results:
 
@@ -547,9 +715,7 @@ while True:
 
                 else:
 
-                    result = "\n\n".join(
-                        results
-                    )
+                    result = "\n\n".join(results)
 
 
             # =================================================
@@ -558,9 +724,12 @@ while True:
 
             elif name == "search_web":
 
-                result = search_web(
-                    arguments["query"]
+                query = arguments.get(
+                    "query",
+                    question,
                 )
+
+                result = search_web(query)
 
 
             # =================================================
@@ -577,16 +746,20 @@ while True:
             # =================================================
 
             print("TOOL RESULT:")
-
             print(result)
 
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_name": name,
+                    "content": str(result),
+                }
+            )
 
-            messages.append({
+    else:
 
-                "role": "tool",
-
-                "tool_name": name,
-
-                "content": str(result)
-
-            })
+        print("\nAI:")
+        print(
+            "I reached the maximum number of tool calls "
+            "for this request."
+        )

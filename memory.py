@@ -2,39 +2,25 @@ import sqlite3
 
 DB_NAME = "memory.db"
 
-def search_memory(keyword):
+
+def get_connection():
     conn = sqlite3.connect(DB_NAME)
 
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        SELECT role, content
-        FROM memories
-        ORDER BY id DESC
-        LIMIT 20
-    """)
-
-    memories = cursor.fetchall()
-
-    conn.close()
-
-    return memories
-
-    
-def save_memory(role, content):
-    conn = sqlite3.connect(DB_NAME)
-
-    cursor = conn.cursor()
-
-    cursor.execute("""
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS memories (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            role TEXT,
-            content TEXT
+            role TEXT NOT NULL,
+            content TEXT NOT NULL
         )
     """)
 
-    cursor.execute(
+    return conn
+
+
+def save_memory(role, content):
+    conn = get_connection()
+
+    conn.execute(
         "INSERT INTO memories (role, content) VALUES (?, ?)",
         (role, content)
     )
@@ -43,24 +29,35 @@ def save_memory(role, content):
     conn.close()
 
 
+def search_memory(keyword, limit=10):
+    conn = get_connection()
+
+    memories = conn.execute(
+        """
+        SELECT role, content
+        FROM memories
+        WHERE content LIKE ?
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (f"%{keyword}%", limit)
+    ).fetchall()
+
+    conn.close()
+
+    return memories
+
+
 def get_memories():
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_connection()
 
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS memories (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            role TEXT,
-            content TEXT
-        )
-    """)
-
-    cursor.execute(
-        "SELECT role, content FROM memories ORDER BY id"
-    )
-
-    memories = cursor.fetchall()
+    memories = conn.execute(
+        """
+        SELECT role, content
+        FROM memories
+        ORDER BY id
+        """
+    ).fetchall()
 
     conn.close()
 
