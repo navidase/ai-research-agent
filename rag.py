@@ -1,11 +1,13 @@
 import os
+from pathlib import Path
 import json
 import ollama
 
 
 EMBEDDING_MODEL = "nomic-embed-text"
 
-INDEX_DIR = "embeddings"
+BASE_DIR = Path(__file__).resolve().parent
+INDEX_DIR = str(BASE_DIR / "embeddings")
 INDEX_FILE = os.path.join(INDEX_DIR, "index.json")
 
 
@@ -19,7 +21,10 @@ def get_embedding(text):
 
 
 def load_document(filename):
-    with open(filename, "r", encoding="utf-8") as file:
+    path = Path(filename)
+    if not path.is_absolute():
+        path = BASE_DIR / path
+    with open(path, "r", encoding="utf-8") as file:
         return file.read()
 
 
@@ -38,6 +43,8 @@ def chunk_text(text, chunk_size=100):
 
 
 def cosine_similarity(a, b):
+    if len(a) != len(b):
+        raise ValueError("Embedding dimensions differ. Rebuild the index with the current embedding model.")
     dot = sum(x * y for x, y in zip(a, b))
 
     norm_a = sum(x * x for x in a) ** 0.5
@@ -66,6 +73,8 @@ def build_index(filename="knowledge.txt"):
         embedding = get_embedding(chunk)
 
         documents.append({
+            "source": Path(filename).name,
+            "chunk_id": i + 1,
             "text": chunk,
             "embedding": embedding
         })
@@ -84,7 +93,14 @@ def load_index():
         return json.load(file)
 
 
-def search_index(query, top_k=3):
+def search_index(query, top_k=3, include_metadata=False):
+    """Default string results preserve compatibility with existing CLI callers.
+
+    Metadata mode returns the exact excerpts supplied to the model.
+    Legacy indexes have unknown sources until rebuilt.
+    """
+    if top_k <= 0:
+        return []
 
     index = load_index()
 
@@ -103,7 +119,7 @@ def search_index(query, top_k=3):
         )
 
         scored.append(
-            (score, item["text"])
+            (score, item)
         )
 
     scored.sort(
@@ -111,7 +127,14 @@ def search_index(query, top_k=3):
         key=lambda x: x[0]
     )
 
-    return [
-        text
-        for score, text in scored[:top_k]
-    ]
+    selected = scored[:top_k]
+    if include_metadata:
+        return [
+            {
+                "source": item.get("source"),
+                "chunk_id": item.get("chunk_id"),
+                "text": item["text"],
+            }
+            for score, item in selected
+        ]
+    return [item["text"] for score, item in selected]

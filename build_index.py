@@ -1,3 +1,5 @@
 from rag import build_index
 
-build_index()
+
+if __name__ == "__main__":
+    build_index()
