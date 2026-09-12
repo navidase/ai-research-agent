@@ -6,6 +6,7 @@ The project includes a Streamlit chat interface and a separate command-line agen
 
 ## Features
 
+- Display retrieved source filenames, chunk numbers, and excerpts beneath knowledge-base answers
 - Search the web through Tavily
 - Retrieve text from a local knowledge base using RAG
 - Store and retrieve user memory
@@ -223,7 +224,6 @@ This requires a working Tavily connection.
 
 - The included knowledge base is small and does not demonstrate large-scale or multi-document retrieval.
 - The web app uses rule-based routing, which can misclassify requests.
-- Retrieved source excerpts are not yet displayed beneath answers.
 - Generated answers may contain errors or unsupported claims.
 - Local inference speed depends on hardware and model size.
 - Web search depends on external service availability and credentials.
@@ -254,8 +254,6 @@ These are development precautions, not a security certification.
 
 ## Planned Improvements
 
-- Display retrieved source filenames and excerpts beneath RAG answers
-- Preserve source information in chat history
 - Evaluate retrieval using a larger set of documents
 - Test answerable and unanswerable questions
 - Improve routing and external-service error handling
